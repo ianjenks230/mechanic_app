@@ -29,10 +29,15 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build web and prepare server
         run: npm run build
+
+      - name: Package deployment
+        run: |
+          zip -r deploy.zip . \
+            -x ".git/*" ".github/*" "node_modules/.cache/*"
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -45,4 +50,4 @@ jobs:
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
-          package: .
+          package: deploy.zip
