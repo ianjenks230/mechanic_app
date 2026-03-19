@@ -34,10 +34,18 @@ jobs:
       - name: Build web and prepare server
         run: npm run build
 
+      - name: Prepare deploy folder
+        run: |
+          rm -rf deploy
+          mkdir deploy
+          cp -R server/. deploy/
+          npm_config_workspaces=false npm --prefix deploy install --omit=dev
+
       - name: Package deployment
         run: |
-          zip -r deploy.zip . \
-            -x ".git/*" ".github/*" "node_modules/.cache/*"
+          pushd deploy
+          zip -r ../deploy.zip . -x "node_modules/.cache/*"
+          popd
 
       - name: Azure login (OIDC)
         uses: azure/login@v2

@@ -77,7 +77,7 @@ Set these GitHub Actions variables:
 - VITE_SUPPORT_EMAIL
 - VITE_DEFAULT_CITY
 
-The workflow runs npm ci, builds the SPA, packages the app into deploy.zip, and deploys via azure/webapps-deploy on push to main. Deployment runs only if the build succeeds.
+The workflow runs npm ci, builds the SPA, installs production dependencies in a deploy folder, packages that folder into deploy.zip, and deploys via azure/webapps-deploy on push to main. Deployment runs only if the build succeeds.
 
 ### 3b) Publish profile alternative
 
