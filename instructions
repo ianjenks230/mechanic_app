@@ -1,0 +1,148 @@
+Mobile Mechanix Azure Deployment Instructions
+
+Overview
+You currently have a local project and no resources deployed in Azure. The goal is to create an Azure App Service (Linux, Node.js LTS) and configure secure GitHub Actions deployment using OpenID Connect (OIDC). This document explains the full sequence from right now, with no Azure resources, to a successful deployment when you push to main.
+
+Prerequisites
+1) Access to an Azure subscription where you can create resource groups, App Service plans, and web apps.
+2) Access to the GitHub repository that hosts this code (example: ianjenks230/mechanic_app).
+3) Azure Cloud Shell access in the Azure Portal (preferred for consistent CLI behavior).
+4) GitHub Actions enabled for the repository.
+
+Step 1: Open Cloud Shell and set your plan
+Open the Azure Portal, then open Cloud Shell (Bash). Make sure you are in the correct subscription if you have multiple. If prompted, select a subscription and create a storage account for Cloud Shell.
+
+Decide on:
+- env suffix: dev (recommended)
+- region: westus2 (recommended)
+- sku: B1 (Basic), or Free if your subscription allows it
+
+Use the commands below exactly, or change env/location/sku values at the top if needed.
+
+Step 2: Create Azure resources and configure the app
+Run this in Cloud Shell (Bash). It creates the resource group, Linux App Service plan, Linux web app, enables https-only, sets NODE_ENV, uses npm start for startup, and turns on basic logging.
+
+set -euo pipefail
+
+ENV=dev
+LOCATION=westus2
+SKU=B1
+RUNTIME="NODE:20-lts"
+
+RG="rg-mechanic-mock-$ENV"
+PLAN="asp-mechanic-mock-$ENV"
+RAND=$(openssl rand -hex 3)
+APP="app-mechanic-mock-$ENV-$RAND"
+
+az group create --name "$RG" --location "$LOCATION"
+az appservice plan create --name "$PLAN" --resource-group "$RG" --sku "$SKU" --is-linux
+az webapp create --resource-group "$RG" --plan "$PLAN" --name "$APP" --runtime "$RUNTIME"
+
+az webapp update --resource-group "$RG" --name "$APP" --https-only true
+az webapp config appsettings set --resource-group "$RG" --name "$APP" --settings NODE_ENV=production
+az webapp config set --resource-group "$RG" --name "$APP" --startup-file "npm start"
+az webapp log config --resource-group "$RG" --name "$APP" --application-logging filesystem --level information --web-server-logging filesystem
+
+HOSTNAME=$(az webapp show --resource-group "$RG" --name "$APP" --query defaultHostName -o tsv)
+
+echo "APP_NAME=$APP"
+echo "HOSTNAME=https://$HOSTNAME"
+
+Record APP_NAME and HOSTNAME. You will need APP_NAME for GitHub deployment configuration.
+
+Step 3: Configure GitHub OIDC for deployments
+This step creates an Azure app registration and service principal, grants it the minimal role on the web app, and adds a federated credential that trusts GitHub Actions tokens from your repo on the main branch.
+
+Run in Cloud Shell (Bash). Replace the REPO value with your repo if different. Replace APP with the app name printed in Step 2.
+
+set -euo pipefail
+
+ENV=dev
+REPO="ianjenks230/mechanic_app"
+RG="rg-mechanic-mock-$ENV"
+APP="<paste app name from step 2>"
+
+SUB_ID=$(az account show --query id -o tsv)
+TENANT_ID=$(az account show --query tenantId -o tsv)
+
+APP_REG_NAME="ga-mechanic-mock-$ENV"
+APP_ID=$(az ad app create --display-name "$APP_REG_NAME" --query appId -o tsv)
+APP_OBJ_ID=$(az ad app show --id "$APP_ID" --query id -o tsv)
+SP_OBJ_ID=$(az ad sp create --id "$APP_ID" --query id -o tsv)
+
+WEBAPP_ID=$(az webapp show --resource-group "$RG" --name "$APP" --query id -o tsv)
+az role assignment create \
+  --role "Website Contributor" \
+  --assignee-object-id "$SP_OBJ_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --scope "$WEBAPP_ID"
+
+FC_JSON=$(cat <<EOF
+{
+  "name": "github-main",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:$REPO:ref:refs/heads/main",
+  "description": "GitHub Actions OIDC",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+EOF
+)
+
+az ad app federated-credential create --id "$APP_OBJ_ID" --parameters "$FC_JSON"
+
+echo "AZURE_CLIENT_ID=$APP_ID"
+echo "AZURE_TENANT_ID=$TENANT_ID"
+echo "AZURE_SUBSCRIPTION_ID=$SUB_ID"
+echo "AZURE_WEBAPP_NAME=$APP"
+
+Record the four values printed at the end.
+
+Step 4: Configure GitHub secrets and variables
+In your GitHub repo settings:
+- Secrets (Actions -> Secrets and variables -> Actions -> Secrets):
+  - AZURE_CLIENT_ID = value printed above
+  - AZURE_TENANT_ID = value printed above
+  - AZURE_SUBSCRIPTION_ID = value printed above
+
+- Variables (Actions -> Secrets and variables -> Actions -> Variables):
+  - AZURE_WEBAPP_NAME = app name from step 2
+  - VITE_APP_NAME = Mobile Mechanix
+  - VITE_SUPPORT_EMAIL = support@mobilemechanix.local
+  - VITE_DEFAULT_CITY = Dallas, TX
+
+These variables are used by the build in GitHub Actions to inject Vite config at build time.
+
+Step 5: Update the GitHub Actions workflow for OIDC
+Your current workflow uses a publish profile. For OIDC, update .github/workflows/azure-appservice.yml to include azure/login and remove publish-profile.
+
+Required steps:
+1) Add a login step before build/deploy:
+   uses: azure/login@v2
+   with:
+     client-id: ${{ secrets.AZURE_CLIENT_ID }}
+     tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+     subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+2) In the deploy step, remove publish-profile and set a slot if needed.
+3) Keep app-name from AZURE_WEBAPP_NAME.
+
+If you want, I can update the workflow for you automatically.
+
+Step 6: Push to main to deploy
+Once the workflow is updated and secrets/vars are set:
+- Commit the workflow changes (if any)
+- Push to main
+- GitHub Actions should build and deploy the app to Azure
+
+You can verify deployment by:
+- Visiting https://<your-app-name>.azurewebsites.net
+- Checking GitHub Actions logs for the deploy job
+- Checking Azure App Service logs in the portal (Log stream)
+
+Troubleshooting tips
+- If webapp creation fails, try a different random suffix or region (eastus, centralus).
+- If role assignment fails, ensure your account has permissions to assign roles.
+- If deployment fails with authorization errors, verify the federated credential subject matches your repo and branch exactly.
+- If the site loads but shows a blank page, confirm the build artifacts are included and server/public has the built assets.
+
+Summary
+You will create a resource group, App Service plan, and Linux Node.js web app; configure https-only, NODE_ENV, npm start, and logging; set up OIDC with GitHub; add the required secrets and variables; and then push to main to deploy. Follow the exact order in this document and you should have a live URL with your mock app.

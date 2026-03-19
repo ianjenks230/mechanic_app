@@ -1,0 +1,7 @@
+node_modules
+.env
+.env.*
+web/dist
+server/public/*
+!server/public/.gitkeep
+.DS_Store
